@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NOVA AI Holographic Face</title>
+<style>
+:root{--bg:transparent;--fg:#e8f6ff;--t1:#0088ff;--t2:#00f0ff;--t3:#8b5cf6;--sh:rgba(0,180,255,.28)}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{
+  height:100%;width:100%;overflow:hidden;
+  background:transparent !important;background-color:transparent !important;
+  padding:0 !important;margin:0 !important;
+  display:flex;justify-content:center;align-items:center;
+}
+#stage{position:relative;width:100%;height:100%;margin:0;padding:0}
+#stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+#shadow{
+  position:absolute;left:50%;height:18px;transform:translateX(-50%);
+  border-radius:50%;background:radial-gradient(closest-side,var(--sh),transparent);
+  filter:blur(5px);animation:float 4.5s ease-in-out infinite;pointer-events:none;
+}
+@keyframes float{50%{opacity:.55;transform:translateX(-50%) scaleX(.9)}}
+#themes,#panel,#status,#toast,#err,header{display:none !important}
+</style>
+</head>
+<body class="embedded">
+<div id="stage"><canvas id="c"></canvas><div id="shadow"></div></div>
+
+<script src="three.min.js"></script>
+<script>
+(function(){
+"use strict";
+
+const FOV = 40;
+const VIS = 3.25;
+const BG_PARTICLES = 72;
+const CRANIUM_POINTS = 2600;
+
+const STATES = {
+  idle:      {scale:1.00, speed:0.42, cyan:0.78, purple:0.35, bright:0.95, glow:0.55, ring:0.20, think:0.0, listen:0.0, speak:0.0},
+  listening: {scale:1.03, speed:0.85, cyan:1.00, purple:0.22, bright:1.18, glow:0.95, ring:0.50, think:0.0, listen:1.0, speak:0.0},
+  thinking:  {scale:1.01, speed:1.65, cyan:0.45, purple:1.00, bright:1.12, glow:0.88, ring:1.00, think:1.0, listen:0.0, speak:0.0},
+  speaking:  {scale:1.02, speed:1.10, cyan:0.92, purple:0.65, bright:1.22, glow:1.00, ring:0.62, think:0.0, listen:0.0, speak:1.0}
+};
+
+const stage = document.getElementById("stage");
+const canvas = document.getElementById("c");
+const shadowEl = document.getElementById("shadow");
+
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true, powerPreference:"high-performance"});
+} catch(e) {
+  return;
+}
+renderer.setClearColor(0x000000, 0);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 60);
+camera.position.set(0, 0, 6.2);
+
+/* Holographic Neon Blue (#0088FF), Cyan (#00F0FF), Purple (#8B5CF6) uniforms */
+const U = {
+  uTime:   {value: 0},
+  uAmp:    {value: 0},
+  uBass:   {value: 0},
+  uHigh:   {value: 0},
+  uMid:    {value: 0},
+  uCyan:   {value: 0.78},
+  uPurple: {value: 0.35},
+  uBright: {value: 1.0},
+  uPx:     {value: 300},
+  uCamZ:   {value: 6.2},
+  uThink:  {value: 0},
+  uListen: {value: 0},
+  DEEP:    {value: new THREE.Color(0x031026)},
+  BLUE:    {value: new THREE.Color(0x0088ff)},
+  CYAN:    {value: new THREE.Color(0x00f0ff)},
+  PURP:    {value: new THREE.Color(0x8b5cf6)}
+};
+
+/* ---------- Dark Futuristic Hologram Projector Backdrop Disc ---------- */
+const holoBackdropMat = new THREE.ShaderMaterial({
+  vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+  fragmentShader: `
+    varying vec2 vUv;
+    uniform float uTime, uGlow, uThink, uListen, uAmp;
+    uniform vec3 DEEP, BLUE, CYAN, PURP;
+    void main() {
+      vec2 p = (vUv - 0.5) * 2.0;
+      float r = length(p);
+      float mask = smoothstep(1.0, 0.72, r);
+      float core = exp(-r * r * 2.2);
+      float grid = 0.04 * (0.5 + 0.5 * sin(p.y * 42.0 - uTime * 2.5));
+      float rim = exp(-abs(r - 0.86) * 26.0) * 0.55;
+      vec3 bgCol = mix(vec3(0.015, 0.03, 0.08), DEEP * 0.55, core);
+      vec3 rimCol = mix(CYAN, PURP, uThink * 0.75 + 0.15 * sin(uTime + atan(p.y, p.x) * 2.0));
+      vec3 col = bgCol + BLUE * core * (0.22 + uAmp * 0.18) + rimCol * (rim * (0.6 + uGlow * 0.5) + grid * core);
+      float alpha = clamp(mask * (0.88 + rim * 0.2), 0.0, 0.94);
+      gl_FragColor = vec4(col, alpha);
+    }
+  `,
+  transparent: true,
+  depthWrite: false,
+  depthTest: false,
+  uniforms: {
+    uTime: U.uTime, uGlow: {value: 0.55}, uThink: U.uThink, uListen: U.uListen,
+    uAmp: U.uAmp, DEEP: U.DEEP, BLUE: U.BLUE, CYAN: U.CYAN, PURP: U.PURP
+  }
+});
+const holoBackdrop = new THREE.Mesh(new THREE.PlaneGeometry(VIS * 0.98, VIS * 0.98), holoBackdropMat);
+holoBackdrop.position.z = -1.25;
+holoBackdrop.renderOrder = -5;
+scene.add(holoBackdrop);
+
+/* ---------- Outer Calibration HUD Rings ---------- */
+function createHudRing(r0, r1, segs, seed, baseAlpha) {
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: "varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+    fragmentShader: `
+      varying vec2 vP;
+      uniform float uAlpha, uSeed, uSegs, uTime, uThink;
+      uniform vec3 BLUE, CYAN, PURP;
+      void main() {
+        float a = atan(vP.y, vP.x);
+        float dash = smoothstep(-0.18, 0.24, sin(a * uSegs + uSeed));
+        float arc = smoothstep(-0.75, -0.1, sin(a * 1.0 + uSeed * 0.7 + uTime * 0.4));
+        vec3 col = mix(CYAN, BLUE, 0.45 + 0.45 * sin(a * 2.0 + uSeed));
+        col = mix(col, PURP, uThink * 0.65);
+        gl_FragColor = vec4(col, dash * arc * uAlpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uAlpha: {value: baseAlpha}, uSeed: {value: seed}, uSegs: {value: segs},
+      uTime: U.uTime, uThink: U.uThink, BLUE: U.BLUE, CYAN: U.CYAN, PURP: U.PURP
+    }
+  });
+  const m = new THREE.Mesh(new THREE.RingGeometry(r0, r1, 144, 1), mat);
+  m.position.z = -0.35;
+  m.renderOrder = 0;
+  scene.add(m);
+  return m;
+}
+const ring1 = createHudRing(1.24, 1.258, 4.0, 0.0, 0.55);
+const ring2 = createHudRing(1.33, 1.344, 6.0, 1.9, 0.36);
+
+/* ---------- Head Root Assembly (Rotates & Breathes Together) ---------- */
+const headGroup = new THREE.Group();
+scene.add(headGroup);
+
+/* Volumetric Robotic Cranium Point Cloud */
+function buildCraniumPoints() {
+  const pos = new Float32Array(CRANIUM_POINTS * 3);
+  const rnd = new Float32Array(CRANIUM_POINTS);
+  const faceRegion = new Float32Array(CRANIUM_POINTS); // 0=shell, 1=brow/cheek highlight
+  let idx = 0;
+  for (let i = 0; i < CRANIUM_POINTS; i++) {
+    const t = (i + 0.5) / CRANIUM_POINTS;
+    const phi = Math.acos(1 - 2 * t);
+    const theta = i * 2.3999632;
+
+    let nx = Math.sin(phi) * Math.cos(theta);
+    let ny = Math.cos(phi);
+    let nz = Math.sin(phi) * Math.sin(theta);
+
+    // Sculpt robotic humanoid cranial silhouette: slightly narrower temples & tapered jaw
+    let sx = 0.72;
+    let sy = 0.96;
+    let sz = 0.76;
+
+    if (ny < 0.0) {
+      // Taper lower face toward robotic jawline/chin
+      const jawT = Math.min(1, -ny);
+      sx *= (1.0 - 0.36 * Math.pow(jawT, 1.25));
+      sz *= (1.0 - 0.24 * Math.pow(jawT, 1.1));
+    }
+    if (nz > 0.15) {
+      // Flatten front visor plane slightly and recess eye sockets & mouth bay
+      const inEyeX = Math.abs(nx) > 0.14 && Math.abs(nx) < 0.52;
+      const inEyeY = ny > 0.05 && ny < 0.34;
+      if (inEyeX && inEyeY) {
+        sz -= 0.09; // Recessed visor socket
+      }
+      const inMouth = Math.abs(nx) < 0.32 && ny > -0.58 && ny < -0.24;
+      if (inMouth) {
+        sz -= 0.05;
+      }
+      // Subtle nasal ridge
+      if (Math.abs(nx) < 0.08 && ny > -0.22 && ny < 0.22) {
+        sz += 0.08 * (1.0 - Math.abs(nx) / 0.08);
+      }
+    }
+
+    // Keep points primarily in front & lateral silhouette for clean holographic portrait
+    if (nz < -0.35) {
+      nz *= 0.65;
+    }
+
+    const shellJitter = 0.965 + 0.035 * Math.random();
+    pos[idx * 3]     = nx * sx * shellJitter;
+    pos[idx * 3 + 1] = ny * sy * shellJitter + 0.03;
+    pos[idx * 3 + 2] = nz * sz * shellJitter;
+    rnd[idx] = Math.random();
+    faceRegion[idx] = (nz > 0.25 && (Math.abs(ny - 0.26) < 0.10 || Math.abs(ny + 0.08) < 0.10)) ? 1.0 : 0.0;
+    idx++;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("aRnd", new THREE.BufferAttribute(rnd, 1));
+  geo.setAttribute("aEdge", new THREE.BufferAttribute(faceRegion, 1));
+
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float aRnd, aEdge;
+      uniform float uTime, uAmp, uCyan, uPurple, uBright, uPx, uCamZ, uThink;
+      uniform vec3 DEEP, BLUE, CYAN, PURP;
+      varying vec3 vC;
+      varying float vA;
+      void main() {
+        vec3 p = position;
+        float wave = sin(p.y * 7.0 - uTime * 2.2) * 0.5 + 0.5;
+        float pulse = 1.0 + uAmp * 0.03 * aRnd + 0.008 * sin(uTime * 1.8 + aRnd * 12.0);
+        p *= pulse;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        float front = smoothstep(-0.35, 0.85, p.z);
+        vA = mix(0.16, 0.88, front) * (0.65 + 0.35 * aEdge);
+        vec3 col = mix(BLUE, CYAN, (0.35 + 0.65 * front) * uCyan);
+        col = mix(col, PURP, (aRnd * 0.45 + uThink * 0.55) * uPurple);
+        col += CYAN * wave * 0.14 * front;
+        vC = col * uBright;
+        gl_PointSize = max((0.011 + aRnd * 0.014 + aEdge * 0.007) * uPx / (-mv.z), 1.4);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      precision highp float;
+      varying vec3 vC;
+      varying float vA;
+      void main() {
+        float d = length(gl_PointCoord - 0.5);
+        float a = smoothstep(0.5, 0.05, d) * vA;
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(vC, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: U
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  pts.renderOrder = 2;
+  return pts;
+}
+const craniumPts = buildCraniumPoints();
+headGroup.add(craniumPts);
+
+/* Architectural Holographic Wireframe Mask Lines */
+function addLineSegments(verts, colorHex, opacity, renderOrder) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: colorHex,
+    transparent: true,
+    opacity: opacity,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.renderOrder = renderOrder || 3;
+  return lines;
+}
+
+function buildHeadWireframe() {
+  const v = [];
+  const seg = (x1,y1,z1, x2,y2,z2) => v.push(x1,y1,z1, x2,y2,z2);
+  const mirrorSeg = (x1,y1,z1, x2,y2,z2) => {
+    seg(x1,y1,z1, x2,y2,z2);
+    seg(-x1,y1,z1, -x2,y2,z2);
+  };
+
+  // Crown & forehead crest
+  seg(0, 0.98, 0.14, 0, 0.62, 0.56);
+  mirrorSeg(0, 0.98, 0.14, 0.34, 0.84, 0.32);
+  mirrorSeg(0.34, 0.84, 0.32, 0.58, 0.54, 0.28);
+  mirrorSeg(0.58, 0.54, 0.28, 0.68, 0.18, 0.14);
+
+  // Supraorbital robotic brow ridges
+  mirrorSeg(0, 0.36, 0.62, 0.16, 0.38, 0.60);
+  mirrorSeg(0.16, 0.38, 0.60, 0.44, 0.34, 0.48);
+  mirrorSeg(0.44, 0.34, 0.48, 0.64, 0.24, 0.26);
+
+  // Cheekbone & temple telemetry fins
+  mirrorSeg(0.64, 0.24, 0.26, 0.58, -0.10, 0.34);
+  mirrorSeg(0.58, -0.10, 0.34, 0.28, -0.14, 0.56);
+  mirrorSeg(0.58, -0.10, 0.34, 0.66, -0.22, 0.08);
+  mirrorSeg(0.68, 0.18, 0.14, 0.74, 0.04, -0.04);
+
+  // Nasal bridge cyber prism
+  seg(0, 0.36, 0.62, 0, -0.12, 0.72);
+  mirrorSeg(0, 0.36, 0.62, 0.08, 0.14, 0.64);
+  mirrorSeg(0.08, 0.14, 0.64, 0.11, -0.14, 0.62);
+  mirrorSeg(0.11, -0.14, 0.62, 0, -0.18, 0.68);
+
+  // Upper face to jaw perimeter
+  mirrorSeg(0.58, -0.10, 0.34, 0.44, -0.52, 0.32);
+  mirrorSeg(0.44, -0.52, 0.32, 0.22, -0.78, 0.46);
+  mirrorSeg(0.22, -0.78, 0.46, 0, -0.84, 0.52);
+
+  return addLineSegments(v, 0x00d8ff, 0.52, 3);
+}
+const headWireframe = buildHeadWireframe();
+headGroup.add(headWireframe);
+
+/* Articulated Lower Jaw Plate (Subtle Jaw Drop When Speaking) */
+const jawGroup = new THREE.Group();
+jawGroup.position.set(0, -0.28, 0.15);
+headGroup.add(jawGroup);
+(function buildJawFrame() {
+  const v = [];
+  const seg = (x1,y1,z1, x2,y2,z2) => v.push(x1,y1,z1, x2,y2,z2);
+  const mirrorSeg = (x1,y1,z1, x2,y2,z2) => {
+    seg(x1,y1,z1, x2,y2,z2);
+    seg(-x1,y1,z1, -x2,y2,z2);
+  };
+  mirrorSeg(0.36, -0.08, 0.26, 0.26, -0.44, 0.36);
+  mirrorSeg(0.26, -0.44, 0.36, 0.10, -0.54, 0.42);
+  seg(-0.10, -0.54, 0.42, 0.10, -0.54, 0.42);
+  mirrorSeg(0.18, -0.34, 0.43, 0.08, -0.44, 0.46);
+  jawGroup.add(addLineSegments(v, 0x38bdf8, 0.65, 3));
+})();
+
+/* ---------- Glowing Robotic Eyes (Blinking, Gaze, Listening/Thinking/Speaking Sync) ---------- */
+function createRoboticEye(sideSign) {
+  const eyeRoot = new THREE.Group();
+  eyeRoot.position.set(sideSign * 0.275, 0.16, 0.575);
+  eyeRoot.rotation.y = sideSign * 0.16;
+
+  // Outer angular visor frame
+  const f = [];
+  const pts = [
+    [-0.145, 0.025], [-0.07, 0.068], [0.085, 0.062], [0.145, 0.005],
+    [0.105, -0.056], [-0.085, -0.058], [-0.145, 0.025]
+  ];
+  for (let i = 0; i < pts.length - 1; i++) {
+    f.push(pts[i][0], pts[i][1], 0.01, pts[i+1][0], pts[i+1][1], 0.01);
+  }
+  const frameLines = addLineSegments(f, 0x00f0ff, 0.88, 5);
+  eyeRoot.add(frameLines);
+
+  // Eyelid shutter group (scales Y from 1.0 open -> 0.06 blink closed)
+  const lidGroup = new THREE.Group();
+  eyeRoot.add(lidGroup);
+
+  // Glowing holographic iris ring
+  const irisRingGeo = new THREE.RingGeometry(0.052, 0.072, 36);
+  const irisRingMat = new THREE.MeshBasicMaterial({
+    color: 0x00f0ff,
+    transparent: true,
+    opacity: 0.92,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const irisRing = new THREE.Mesh(irisRingGeo, irisRingMat);
+  irisRing.position.z = 0.016;
+  irisRing.renderOrder = 6;
+  lidGroup.add(irisRing);
+
+  // Segmented scanner arc inside eye (rotates during Thinking / Listening)
+  const scanGeo = new THREE.RingGeometry(0.076, 0.088, 32, 1, 0, Math.PI * 1.15);
+  const scanMat = new THREE.MeshBasicMaterial({
+    color: 0x8b5cf6,
+    transparent: true,
+    opacity: 0.72,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const scanArc = new THREE.Mesh(scanGeo, scanMat);
+  scanArc.position.z = 0.018;
+  scanArc.renderOrder = 6;
+  lidGroup.add(scanArc);
+
+  // Inner luminous pupil core + outer eye halo
+  const pupilGroup = new THREE.Group();
+  lidGroup.add(pupilGroup);
+
+  const pupilGeo = new THREE.CircleGeometry(0.032, 24);
+  const pupilMat = new THREE.MeshBasicMaterial({
+    color: 0xe0fbff,
+    transparent: true,
+    opacity: 0.96,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const pupilMesh = new THREE.Mesh(pupilGeo, pupilMat);
+  pupilMesh.position.z = 0.024;
+  pupilMesh.renderOrder = 7;
+  pupilGroup.add(pupilMesh);
+
+  const eyeGlowGeo = new THREE.PlaneGeometry(0.28, 0.22);
+  const eyeGlowMat = new THREE.ShaderMaterial({
+    vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform vec3 uColor;
+      uniform float uIntensity;
+      void main() {
+        float d = length((vUv - 0.5) * vec2(1.0, 1.25));
+        float g = exp(-d * d * 12.0) * uIntensity;
+        gl_FragColor = vec4(uColor, clamp(g, 0.0, 0.85));
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uColor: {value: new THREE.Color(0x00f0ff)},
+      uIntensity: {value: 0.85}
+    }
+  });
+  const eyeGlow = new THREE.Mesh(eyeGlowGeo, eyeGlowMat);
+  eyeGlow.position.z = 0.005;
+  eyeGlow.renderOrder = 4;
+  lidGroup.add(eyeGlow);
+
+  return {eyeRoot, lidGroup, pupilGroup, irisRing, irisRingMat, scanArc, scanMat, pupilMat, eyeGlowMat, frameLines};
+}
+
+const leftEye = createRoboticEye(-1);
+const rightEye = createRoboticEye(1);
+headGroup.add(leftEye.eyeRoot);
+headGroup.add(rightEye.eyeRoot);
+
+/* ---------- Digital Holographic Mouth + Real-Time Viseme Lip-Sync ---------- */
+const mouthGroup = new THREE.Group();
+mouthGroup.position.set(0, -0.375, 0.585);
+headGroup.add(mouthGroup);
+
+const MOUTH_SEGS = 24;
+const upperLipPos = new Float32Array((MOUTH_SEGS + 1) * 3);
+const lowerLipPos = new Float32Array((MOUTH_SEGS + 1) * 3);
+
+function createLipLine(buf, colorHex) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(buf, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: colorHex,
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const line = new THREE.Line(geo, mat);
+  line.renderOrder = 7;
+  return {line, geo, mat};
+}
+const upperLip = createLipLine(upperLipPos, 0x00f0ff);
+const lowerLip = createLipLine(lowerLipPos, 0x00b4ff);
+mouthGroup.add(upperLip.line);
+mouthGroup.add(lowerLip.line);
+
+// Holographic inner lip glow plane (only visible when mouth is open)
+const mouthCoreMat = new THREE.ShaderMaterial({
+  vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+  fragmentShader: `
+    varying vec2 vUv;
+    uniform float uOpen, uBright;
+    uniform vec3 CYAN, BLUE, PURP;
+    void main() {
+      vec2 p = (vUv - 0.5) * 2.0;
+      float ellipse = p.x * p.x + (p.y * p.y) / max(0.04, uOpen * uOpen * 2.4);
+      float glow = exp(-ellipse * 2.6) * smoothstep(0.01, 0.14, uOpen);
+      vec3 col = mix(BLUE, CYAN, 0.65);
+      col = mix(col, PURP, abs(p.x) * 0.35);
+      gl_FragColor = vec4(col * uBright, clamp(glow * 0.72, 0.0, 0.75));
+    }
+  `,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  uniforms: {
+    uOpen: {value: 0},
+    uBright: U.uBright,
+    CYAN: U.CYAN,
+    BLUE: U.BLUE,
+    PURP: U.PURP
+  }
+});
+const mouthCoreGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.48, 0.24), mouthCoreMat);
+mouthCoreGlow.position.z = -0.01;
+mouthCoreGlow.renderOrder = 6;
+mouthGroup.add(mouthCoreGlow);
+
+// 11 Digital Vocal Frequency Bars inside Mouth Aperture
+const EQ_BARS = 11;
+const eqBars = [];
+const barGeo = new THREE.PlaneGeometry(0.016, 1.0);
+for (let i = 0; i < EQ_BARS; i++) {
+  const mat = new THREE.MeshBasicMaterial({
+    color: i % 2 === 0 ? 0x00f0ff : 0x3b82f6,
+    transparent: true,
+    opacity: 0.0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const m = new THREE.Mesh(barGeo, mat);
+  const normX = (i - (EQ_BARS - 1) / 2) / ((EQ_BARS - 1) / 2);
+  m.position.set(normX * 0.155, 0, 0.012 - Math.abs(normX) * 0.015);
+  m.scale.y = 0.004;
+  m.renderOrder = 8;
+  mouthGroup.add(m);
+  eqBars.push({mesh: m, mat, normX});
+}
+
+/* ---------- Ambient Holographic Floating Particles ---------- */
+const bgPos = new Float32Array(BG_PARTICLES * 3);
+const bgSize = new Float32Array(BG_PARTICLES);
+const bgAlpha = new Float32Array(BG_PARTICLES);
+const bgColor = new Float32Array(BG_PARTICLES * 3);
+const bgData = [];
+(function createBgParticles() {
+  const pal = [[0.0, 0.94, 1.0], [0.0, 0.53, 1.0], [0.55, 0.36, 0.96]];
+  for (let i = 0; i < BG_PARTICLES; i++) {
+    bgColor.set(pal[i % 3], i * 3);
+    bgSize[i] = 0.014 + Math.random() * 0.032;
+    bgData.push({
+      a: Math.random() * Math.PI * 2,
+      r: 1.20 + Math.random() * 0.72,
+      sp: (0.06 + Math.random() * 0.16) * (Math.random() < 0.5 ? -1 : 1),
+      y: (Math.random() - 0.5) * 2.1,
+      ph: Math.random() * Math.PI * 2,
+      fs: 0.35 + Math.random() * 0.65
+    });
+  }
+})();
+const bgGeo = new THREE.BufferGeometry();
+bgGeo.setAttribute("position", new THREE.BufferAttribute(bgPos, 3));
+bgGeo.setAttribute("aSize", new THREE.BufferAttribute(bgSize, 1));
+bgGeo.setAttribute("aAlpha", new THREE.BufferAttribute(bgAlpha, 1));
+bgGeo.setAttribute("aColor", new THREE.BufferAttribute(bgColor, 3));
+const bgPts = new THREE.Points(bgGeo, new THREE.ShaderMaterial({
+  vertexShader: `
+    attribute float aSize, aAlpha;
+    attribute vec3 aColor;
+    uniform float uPx;
+    varying float vA;
+    varying vec3 vC;
+    void main() {
+      vA = aAlpha;
+      vC = aColor;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = max(aSize * uPx / (-mv.z), 1.2);
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: `
+    precision highp float;
+    varying vec3 vC;
+    varying float vA;
+    void main() {
+      float d = length(gl_PointCoord - 0.5);
+      gl_FragColor = vec4(vC, smoothstep(0.5, 0.05, d) * vA);
+    }
+  `,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  uniforms: {uPx: U.uPx}
+}));
+bgPts.frustumCulled = false;
+bgPts.renderOrder = 1;
+scene.add(bgPts);
+
+/* ---------- Theme Mapping (Keeps Holographic Blue/Cyan/Purple Identity) ---------- */
+let themeName = "dark";
+function applyTheme(name, custom) {
+  themeName = name || themeName;
+  // Design C identity always keeps futuristic Neon Blue, Cyan & Purple while slightly tinting highlight warmth per app theme
+  if (name === "red") {
+    U.BLUE.setHex(0x0088ff);
+    U.CYAN.setHex(0x38bdf8);
+    U.PURP.setHex(0xec4899);
+  } else if (name === "sunset") {
+    U.BLUE.setHex(0x2563eb);
+    U.CYAN.setHex(0x00f0ff);
+    U.PURP.setHex(0xa855f7);
+  } else if (custom) {
+    const c = new THREE.Color(custom);
+    U.BLUE.setHex(0x0088ff).lerp(c, 0.25);
+    U.CYAN.setHex(0x00f0ff);
+    U.PURP.setHex(0x8b5cf6);
+  } else {
+    U.BLUE.setHex(0x0088ff);
+    U.CYAN.setHex(0x00f0ff);
+    U.PURP.setHex(0x8b5cf6);
+  }
+}
+
+/* ---------- State & Lip-Sync Engine ---------- */
+let state = "idle";
+const cur = Object.assign({}, STATES.idle);
+const tgt = Object.assign({}, STATES.idle);
+
+const extAudio = {level: 0, bass: 0, high: 0, mid: 0};
+let externalAudioTime = 0;
+const audio = {level: 0, bass: 0, high: 0, mid: 0};
+
+// Viseme & Lip-Sync Smooth Values
+const mouth = {open: 0, width: 1.0, round: 0, jawDrop: 0};
+
+function setOrbState(s) {
+  if (!STATES[s]) return;
+  state = s;
+  Object.assign(tgt, STATES[s]);
+  if (s !== "speaking") {
+    // Enforce instant silence closure when leaving speaking state
+    extAudio.level = 0;
+    extAudio.bass = 0;
+    extAudio.high = 0;
+    extAudio.mid = 0;
+  }
+}
+
+function setExternalAudio(level, bass, high, mid) {
+  const l = Math.max(0, Math.min(1, Number(level) || 0));
+  extAudio.level = l;
+  extAudio.bass = Math.max(0, Math.min(1, bass !== undefined && bass !== null ? Number(bass) : l * 0.7));
+  extAudio.high = Math.max(0, Math.min(1, high !== undefined && high !== null ? Number(high) : l * 0.45));
+  extAudio.mid  = Math.max(0, Math.min(1, mid  !== undefined && mid  !== null ? Number(mid)  : l * 0.85));
+  externalAudioTime = performance.now();
+}
+
+function computeTargetViseme(nowMs) {
+  // Mouth MUST ONLY animate when AI is actively SPEAKING and receiving non-silent playback signal
+  if (state !== "speaking") {
+    return {open: 0, width: 1.0, round: 0, amp: 0, bass: 0, high: 0, mid: 0};
+  }
+  const ageMs = nowMs - externalAudioTime;
+  if (ageMs > 200 || extAudio.level < 0.022) {
+    return {open: 0, width: 1.0, round: 0, amp: 0, bass: 0, high: 0, mid: 0};
+  }
+
+  const l = extAudio.level;
+  const b = extAudio.bass;
+  const h = extAudio.high;
+  const m = extAudio.mid;
+
+  // Spectral viseme shaping:
+  // - bass dominant -> 'O'/'U' rounded aperture
+  // - mid/amp -> 'A' wide vertical jaw open
+  // - high dominant -> 'E'/'S' wider horizontal smile/fricative stretch
+  const vowelOpen = Math.min(1.0, (l * 0.75 + m * 0.55 + b * 0.25) * 1.15);
+  const roundWeight = Math.max(0, Math.min(1, b * 1.15 - h * 0.4));
+  const wideWeight = Math.max(0, Math.min(1, h * 1.1 - b * 0.25));
+  const width = 1.0 + wideWeight * 0.18 - roundWeight * 0.16;
+
+  return {open: vowelOpen, width: width, round: roundWeight, amp: l, bass: b, high: h, mid: m};
+}
+
+function updateMouthGeometry(t, dt, targetViseme) {
+  const rate = targetViseme.open > mouth.open ? 24 : 30; // Fast snappy closure when silent!
+  const k = 1 - Math.exp(-dt * rate);
+  mouth.open += (targetViseme.open - mouth.open) * k;
+  mouth.width += (targetViseme.width - mouth.width) * k;
+  mouth.round += (targetViseme.round - mouth.round) * k;
+
+  // Hard snap to zero when below threshold -> razor-clean closed mouth
+  if (mouth.open < 0.005 && targetViseme.open === 0) {
+    mouth.open = 0;
+  }
+
+  const openAmt = mouth.open;
+  const halfW = 0.19 * mouth.width;
+  const maxGap = openAmt * 0.088;
+
+  for (let i = 0; i <= MOUTH_SEGS; i++) {
+    const u = i / MOUTH_SEGS;
+    const normX = u * 2.0 - 1.0; // -1 .. +1
+    const arch = Math.cos(normX * Math.PI * 0.5);
+    const cupid = Math.abs(normX) < 0.35 ? -0.006 * (1.0 - Math.abs(normX) / 0.35) : 0.0;
+
+    // Slight smile curvature on corners when speaking or idle
+    const cornerLift = Math.pow(Math.abs(normX), 2.2) * 0.014;
+    const x = normX * halfW;
+    const z = -Math.pow(Math.abs(normX), 2.0) * 0.055;
+
+    const upY = cornerLift + cupid + arch * maxGap * 0.36;
+    const loY = cornerLift - arch * maxGap * (0.95 + mouth.round * 0.25);
+
+    upperLipPos[i * 3] = x;
+    upperLipPos[i * 3 + 1] = upY;
+    upperLipPos[i * 3 + 2] = z;
+
+    lowerLipPos[i * 3] = x;
+    lowerLipPos[i * 3 + 1] = loY;
+    lowerLipPos[i * 3 + 2] = z;
+  }
+
+  upperLip.geo.attributes.position.needsUpdate = true;
+  lowerLip.geo.attributes.position.needsUpdate = true;
+
+  // Inner digital vocal bars only illuminate while actively open
+  mouthCoreMat.uniforms.uOpen.value = openAmt;
+  for (let i = 0; i < EQ_BARS; i++) {
+    const b = eqBars[i];
+    const centerEnv = Math.cos(b.normX * Math.PI * 0.5);
+    const freqMod = Math.abs(b.normX) < 0.35
+      ? (0.55 + 0.45 * targetViseme.bass)
+      : (Math.abs(b.normX) < 0.7 ? (0.55 + 0.45 * targetViseme.mid) : (0.45 + 0.55 * targetViseme.high));
+    const microWave = 0.78 + 0.22 * Math.sin(t * 22.0 + i * 1.15);
+    const barHeight = Math.max(0.001, openAmt * centerEnv * freqMod * microWave * 0.11);
+    b.mesh.scale.y = barHeight;
+    b.mesh.position.y = -openAmt * 0.022;
+    b.mat.opacity = openAmt > 0.02 ? Math.min(0.95, openAmt * 1.35 * centerEnv) : 0.0;
+  }
+
+  // Articulated robotic mandible hinge follows mouth open
+  jawGroup.rotation.x = openAmt * 0.11;
+  jawGroup.position.y = -0.28 - openAmt * 0.018;
+}
+
+/* ---------- Natural Eye Blink & State-Driven Gaze ---------- */
+let nextBlinkAt = 2.6;
+let blinkProgress = -1; // -1 = inactive, 0..1 = active blink
+let gazeTargetX = 0, gazeTargetY = 0;
+let gazeCurX = 0, gazeCurY = 0;
+let nextGazeShiftAt = 1.4;
+
+function updateEyes(t, dt) {
+  // Natural blinking timer
+  if (blinkProgress < 0 && t >= nextBlinkAt) {
+    blinkProgress = 0;
+  }
+  let lidScaleY = 1.0;
+  if (blinkProgress >= 0) {
+    blinkProgress += dt / 0.16; // Crisp 160ms natural blink
+    if (blinkProgress >= 1.0) {
+      blinkProgress = -1;
+      nextBlinkAt = t + 2.7 + Math.random() * 2.8;
+      lidScaleY = 1.0;
+    } else {
+      const wave = Math.sin(blinkProgress * Math.PI);
+      lidScaleY = Math.max(0.06, 1.0 - wave * 0.94);
+    }
+  }
+
+  // Subtle state-reactive gaze shift
+  if (t >= nextGazeShiftAt) {
+    if (state === "listening") {
+      // Attentive slight head-on focus
+      gazeTargetX = (Math.random() - 0.5) * 0.014;
+      gazeTargetY = (Math.random() - 0.5) * 0.008;
+      nextGazeShiftAt = t + 1.2 + Math.random() * 1.5;
+    } else if (state === "thinking") {
+      // Slightly upward-diagonal cognitive saccades
+      gazeTargetX = (Math.random() - 0.5) * 0.036;
+      gazeTargetY = 0.008 + Math.random() * 0.016;
+      nextGazeShiftAt = t + 0.7 + Math.random() * 0.9;
+    } else if (state === "speaking") {
+      gazeTargetX = (Math.random() - 0.5) * 0.018;
+      gazeTargetY = (Math.random() - 0.5) * 0.010;
+      nextGazeShiftAt = t + 1.1 + Math.random() * 1.4;
+    } else {
+      gazeTargetX = (Math.random() - 0.5) * 0.022;
+      gazeTargetY = (Math.random() - 0.5) * 0.012;
+      nextGazeShiftAt = t + 2.0 + Math.random() * 2.5;
+    }
+  }
+  const gk = 1 - Math.exp(-dt * 7.5);
+  gazeCurX += (gazeTargetX - gazeCurX) * gk;
+  gazeCurY += (gazeTargetY - gazeCurY) * gk;
+
+  // Eye intensity & color by state
+  const speechBoost = state === "speaking" ? audio.level * 0.35 : 0;
+  const listenPulse = state === "listening" ? 0.14 * Math.sin(t * 4.5) : 0;
+  const glowInt = (state === "idle" ? 0.72 : (state === "listening" ? 1.10 : (state === "thinking" ? 0.95 : 1.05))) + speechBoost + listenPulse;
+
+  const eyeCol = new THREE.Color().copy(U.CYAN).lerp(U.PURP, cur.think * 0.72);
+  const irisScale = 1.0 + cur.listen * 0.08 + speechBoost * 0.10;
+
+  [leftEye, rightEye].forEach((eye, idx) => {
+    const dir = idx === 0 ? 1 : -1;
+    eye.lidGroup.scale.y = lidScaleY;
+    eye.pupilGroup.position.x = gazeCurX;
+    eye.pupilGroup.position.y = gazeCurY;
+    eye.irisRing.scale.setScalar(irisScale);
+    eye.irisRingMat.color.copy(eyeCol);
+    eye.eyeGlowMat.uniforms.uColor.value.copy(eyeCol);
+    eye.eyeGlowMat.uniforms.uIntensity.value = glowInt;
+
+    // Scanner arc animates smoothly during Thinking & Listening
+    eye.scanArc.rotation.z += dt * dir * (0.45 + cur.think * 3.4 + cur.listen * 1.1);
+    eye.scanMat.color.copy(cur.think > 0.3 ? U.PURP : U.BLUE);
+    eye.scanMat.opacity = 0.25 + cur.think * 0.65 + cur.listen * 0.35;
+    eye.frameLines.material.color.copy(cur.listen > 0.4 ? U.CYAN : U.BLUE);
+    eye.frameLines.material.opacity = 0.68 + cur.listen * 0.28 + cur.think * 0.15;
+  });
+}
+
+/* ---------- Drag to Inspect 3D Hologram ---------- */
+let dragging = false, px = 0, py = 0, velX = 0, velY = 0;
+canvas.addEventListener("pointerdown", e => {
+  dragging = true;
+  px = e.clientX;
+  py = e.clientY;
+  canvas.setPointerCapture(e.pointerId);
+  canvas.style.cursor = "grabbing";
+});
+canvas.addEventListener("pointermove", e => {
+  if (!dragging) return;
+  velY += (e.clientX - px) * 0.011;
+  velX += (e.clientY - py) * 0.011;
+  px = e.clientX;
+  py = e.clientY;
+});
+const endDrag = () => { dragging = false; canvas.style.cursor = "grab"; };
+canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointercancel", endDrag);
+
+/* ---------- Main Animation Loop ---------- */
+let time = 0, flow = 0, pxPerUnit = 300;
+function updateScene(dt, nowMs) {
+  const k = 1 - Math.exp(-dt * 4.2);
+  for (const key in cur) cur[key] += (tgt[key] - cur[key]) * k;
+  time += dt;
+  flow += dt * cur.speed;
+
+  // Read live playback audio strictly for speaking lip sync or subtle ambient listening glow
+  const visTarget = computeTargetViseme(nowMs);
+  const ak = 1 - Math.exp(-dt * (visTarget.amp > audio.level ? 20 : 14));
+  const listenEnv = state === "listening" && (nowMs - externalAudioTime < 220) ? extAudio.level : 0;
+  const targetLvl = state === "speaking" ? visTarget.amp : listenEnv;
+
+  audio.level += (targetLvl - audio.level) * ak;
+  audio.bass  += (visTarget.bass - audio.bass) * ak;
+  audio.high  += (visTarget.high - audio.high) * ak;
+  audio.mid   += (visTarget.mid  - audio.mid)  * ak;
+
+  // Subtle idle breathing & smooth drag-return centering
+  const hoverY = Math.sin(time * 1.45) * 0.022;
+  const swayY = Math.sin(time * 0.55) * (state === "listening" ? 0.04 : 0.085);
+  const headScale = cur.scale * (1 + 0.008 * Math.sin(time * 1.4) + (state === "speaking" ? audio.level * 0.018 : 0));
+
+  headGroup.position.y = hoverY;
+  headGroup.scale.setScalar(headScale);
+
+  if (dragging) {
+    headGroup.rotation.y += velY * Math.min(dt * 18, 1) * 0.55;
+    headGroup.rotation.x = Math.max(-0.55, Math.min(0.55, headGroup.rotation.x + velX * Math.min(dt * 18, 1) * 0.55));
+  } else {
+    headGroup.rotation.y += (swayY - headGroup.rotation.y) * (1 - Math.exp(-dt * 2.2)) + velY * dt * 2.0;
+    headGroup.rotation.x *= Math.exp(-dt * 3.0);
+  }
+  velX *= Math.exp(-dt * 6);
+  velY *= Math.exp(-dt * 6);
+
+  // Sync shader uniforms
+  U.uTime.value = flow;
+  U.uAmp.value = audio.level + cur.think * 0.16;
+  U.uBass.value = audio.bass;
+  U.uHigh.value = audio.high;
+  U.uMid.value = audio.mid;
+  U.uCyan.value = cur.cyan;
+  U.uPurple.value = cur.purple;
+  U.uBright.value = cur.bright;
+  U.uThink.value = cur.think;
+  U.uListen.value = cur.listen;
+  holoBackdropMat.uniforms.uGlow.value = cur.glow;
+
+  // Wireframe accent modulation
+  headWireframe.material.opacity = 0.42 + cur.glow * 0.22 + (state === "listening" ? 0.15 : 0);
+
+  // Calibration rings
+  ring1.rotation.z += dt * (0.14 + cur.ring * 0.65);
+  ring2.rotation.z -= dt * (0.10 + cur.ring * 0.42);
+  ring1.material.uniforms.uAlpha.value = 0.34 + cur.ring * 0.35 + audio.level * 0.25;
+  ring2.material.uniforms.uAlpha.value = 0.20 + cur.ring * 0.25 + cur.think * 0.25;
+
+  // Update robotic eyes & audio-driven viseme mouth
+  updateEyes(time, dt);
+  updateMouthGeometry(time, dt, visTarget);
+
+  // Update floating ambient particles
+  const P = bgPts.geometry.attributes;
+  const boost = 0.55 + cur.speed * 0.75 + cur.think * 0.9;
+  for (let i = 0; i < BG_PARTICLES; i++) {
+    const d = bgData[i];
+    d.a += d.sp * dt * boost;
+    const r = d.r + Math.sin(time * d.fs + d.ph) * 0.08 + audio.level * 0.07;
+    const x = Math.cos(d.a) * r;
+    const z = Math.sin(d.a) * r * 0.55 - 0.15;
+    const y = d.y * 0.8 + Math.sin(d.a * 1.4 + d.ph) * 0.14;
+    P.position.setXYZ(i, x, y, z);
+    P.aAlpha.setX(i, Math.pow(0.5 + 0.5 * Math.sin(time * d.fs * 1.5 + d.ph), 1.4) * (0.45 + cur.glow * 0.35));
+  }
+  P.position.needsUpdate = true;
+  P.aAlpha.needsUpdate = true;
+
+  shadowEl.style.width = Math.round(pxPerUnit * 1.35 * headScale) + "px";
+}
+
+function handleResize() {
+  const w = Math.max(stage.clientWidth, 1);
+  const h = Math.max(stage.clientHeight, 1);
+  const pr = Math.min(window.devicePixelRatio || 1, 2);
+  renderer.setPixelRatio(pr);
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  const visH = VIS / Math.min(1, w / h);
+  const tan = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+  camera.position.z = visH / (2 * tan);
+  U.uCamZ.value = camera.position.z;
+  camera.updateProjectionMatrix();
+  pxPerUnit = h / visH;
+  U.uPx.value = h * pr / (2 * tan);
+  shadowEl.style.top = Math.round(h / 2 + pxPerUnit * 1.15) + "px";
+}
+
+window.addEventListener("resize", handleResize);
+window.addEventListener("orientationchange", () => setTimeout(handleResize, 200));
+if (window.ResizeObserver) new ResizeObserver(handleResize).observe(stage);
+
+let last = performance.now();
+function animate(now) {
+  requestAnimationFrame(animate);
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  updateScene(dt, now);
+  renderer.render(scene, camera);
+}
+
+window.JarvisOrb = {
+  setState: setOrbState,
+  setTheme: n => applyTheme(n),
+  setBackground: hex => applyTheme(null, hex),
+  setExternalAudio: setExternalAudio,
+  startListening: () => setOrbState("listening"),
+  startThinking: () => setOrbState("thinking"),
+  startSpeaking: () => setOrbState("speaking"),
+  stopSpeaking: () => {
+    setExternalAudio(0, 0, 0, 0);
+    setOrbState("idle");
+  },
+  getDebugState: () => ({
+    state: state,
+    mouthOpen: mouth.open,
+    mouthWidth: mouth.width,
+    audioLevel: audio.level
+  })
+};
+
+handleResize();
+applyTheme("dark");
+setOrbState("idle");
+requestAnimationFrame(animate);
+})();
+</script>
+</body>
+</html>
